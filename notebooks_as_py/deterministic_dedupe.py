@@ -1,47 +1,63 @@
-from splink.datasets import splink_datasets
-from splink.duckdb.linker import DuckDBLinker
-import altair as alt
-alt.renderers.enable('html')
+# Uncomment and run this cell if you're running in Google Colab.
+# !pip install splink
 
-import pandas as pd 
+import pandas as pd
+
+from splink import splink_datasets
+
 pd.options.display.max_rows = 1000
 df = splink_datasets.historical_50k
 df.head()
 
-from splink.duckdb.blocking_rule_library import block_on
-
-# Simple settings dictionary will be used for exploratory analysis
-settings = {
-    "link_type": "dedupe_only",
-    "blocking_rules_to_generate_predictions": [
-        block_on(["first_name", "surname", "dob"]),
-        block_on(["surname", "dob", "postcode_fake"]),
-        block_on(["first_name", "dob", "occupation"]),
-    ],
-    "retain_matching_columns": True,
-    "retain_intermediate_calculation_columns": True,
-}
-linker = DuckDBLinker(df, settings)
-
-linker.debug_mode = False
-
-linker.profile_columns(
-    ["first_name", "surname", "substr(dob, 1,4)"], top_n=10, bottom_n=5
+from splink import DuckDBAPI, block_on
+from splink.blocking_analysis import (
+    cumulative_comparisons_to_be_scored_from_blocking_rules_chart,
 )
 
-linker.cumulative_num_comparisons_from_blocking_rules_chart()
+db_api = DuckDBAPI()
+cumulative_comparisons_to_be_scored_from_blocking_rules_chart(
+    table_or_tables=df,
+    blocking_rules=[
+        block_on("first_name", "surname", "dob"),
+        block_on("surname", "dob", "postcode_fake"),
+        block_on("first_name", "dob", "occupation"),
+    ],
+    db_api=db_api,
+    link_type="dedupe_only",
+)
 
-df_predict = linker.deterministic_link()
+from splink import Linker, SettingsCreator
+
+settings = SettingsCreator(
+    link_type="dedupe_only",
+    blocking_rules_to_generate_predictions=[
+        block_on("first_name", "surname", "dob"),
+        block_on("surname", "dob", "postcode_fake"),
+        block_on("first_name", "dob", "occupation"),
+    ],
+    retain_intermediate_calculation_columns=True,
+)
+
+linker = Linker(df, settings, db_api=db_api)
+
+
+df_predict = linker.inference.deterministic_link()
 df_predict.as_pandas_dataframe().head()
 
-clusters = linker.cluster_pairwise_predictions_at_threshold(df_predict, threshold_match_probability=1)
+clusters = linker.clustering.cluster_pairwise_predictions_at_threshold(
+    df_predict, threshold_match_probability=1
+)
 
 clusters.as_pandas_dataframe(limit=5)
 
-linker.cluster_studio_dashboard(df_predict, clusters, "dashboards/50k_deterministic_cluster.html", sampling_method='by_cluster_size', overwrite=True)
+linker.visualisations.cluster_studio_dashboard(
+    df_predict,
+    clusters,
+    "dashboards/50k_deterministic_cluster.html",
+    sampling_method="by_cluster_size",
+    overwrite=True,
+)
 
 from IPython.display import IFrame
 
-IFrame(
-    src="./dashboards/50k_deterministic_cluster.html", width="100%", height=1200
-)  
+IFrame(src="./dashboards/50k_deterministic_cluster.html", width="100%", height=1200)

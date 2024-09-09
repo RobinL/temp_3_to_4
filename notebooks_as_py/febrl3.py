@@ -1,98 +1,129 @@
-import pandas as pd
-import altair as alt
+# Uncomment and run this cell if you're running in Google Colab.
+# !pip install splink
+
 from splink.datasets import splink_datasets
 
 df = splink_datasets.febrl3
+
 df = df.rename(columns=lambda x: x.strip())
 
-df["cluster"] = df["rec_id"].apply(lambda x: "-".join(x.split('-')[:2]))
+df["cluster"] = df["rec_id"].apply(lambda x: "-".join(x.split("-")[:2]))
 
-# dob and ssn needs to be a string for fuzzy comparisons like levenshtein to be applied
 df["date_of_birth"] = df["date_of_birth"].astype(str).str.strip()
-df["date_of_birth"] = df["date_of_birth"].replace("", None)
-
 df["soc_sec_id"] = df["soc_sec_id"].astype(str).str.strip()
-df["soc_sec_id"] = df["soc_sec_id"].replace("", None)
 
-df["postcode"] = df["postcode"].astype(str).str.strip()
-df["postcode"] = df["postcode"].replace("", None)
 df.head(2)
 
+df["date_of_birth"] = df["date_of_birth"].astype(str).str.strip()
+df["soc_sec_id"] = df["soc_sec_id"].astype(str).str.strip()
 
-from splink.duckdb.linker import DuckDBLinker
+df["date_of_birth"] = df["date_of_birth"].astype(str).str.strip()
+df["soc_sec_id"] = df["soc_sec_id"].astype(str).str.strip()
 
-settings = {
-    "unique_id_column_name": "rec_id",
-    "link_type": "dedupe_only",
-}
+from splink import DuckDBAPI, Linker, SettingsCreator
 
-linker = DuckDBLinker(df, settings)
+# TODO:  Allow missingness to be analysed without a linker
+settings = SettingsCreator(
+    unique_id_column_name="rec_id",
+    link_type="dedupe_only",
+)
 
-linker.missingness_chart()
+linker = Linker(df, settings, db_api=DuckDBAPI())
 
-linker.profile_columns(list(df.columns))
+from splink.exploratory import completeness_chart
 
-from splink.duckdb.blocking_rule_library import block_on
+completeness_chart(df, db_api=DuckDBAPI())
+
+from splink.exploratory import profile_columns
+
+profile_columns(df, db_api=DuckDBAPI(), column_expressions=["given_name", "surname"])
+
+from splink import DuckDBAPI, block_on
+from splink.blocking_analysis import (
+    cumulative_comparisons_to_be_scored_from_blocking_rules_chart,
+)
 
 blocking_rules = [
-        block_on("soc_sec_id"),
-        block_on("given_name"),
-        block_on("surname"),
-        block_on("date_of_birth"),
-        block_on("postcode"),
+    block_on("soc_sec_id"),
+    block_on("given_name"),
+    block_on("surname"),
+    block_on("date_of_birth"),
+    block_on("postcode"),
 ]
-linker.cumulative_num_comparisons_from_blocking_rules_chart(blocking_rules)
 
-from splink.duckdb.linker import DuckDBLinker
-import splink.duckdb.comparison_library as cl
-import splink.duckdb.comparison_template_library as ctl
+db_api = DuckDBAPI()
+cumulative_comparisons_to_be_scored_from_blocking_rules_chart(
+    table_or_tables=df,
+    blocking_rules=blocking_rules,
+    db_api=db_api,
+    link_type="dedupe_only",
+    unique_id_column_name="rec_id",
+)
 
+import splink.comparison_library as cl
 
-settings = {
-    "unique_id_column_name": "rec_id",
-    "link_type": "dedupe_only",
-    "blocking_rules_to_generate_predictions": blocking_rules,
-    "comparisons": [
-        ctl.name_comparison("given_name", term_frequency_adjustments=True),
-        ctl.name_comparison("surname", term_frequency_adjustments=True),
-        ctl.date_comparison("date_of_birth", 
-                            damerau_levenshtein_thresholds=[],
-                            cast_strings_to_date=True,
-                            invalid_dates_as_null=True,
-                            date_format="%Y%m%d"),
-        cl.levenshtein_at_thresholds("soc_sec_id", [2]),
-        cl.exact_match("street_number", term_frequency_adjustments=True),
-        cl.exact_match("postcode", term_frequency_adjustments=True),
+from splink import Linker
+
+settings = SettingsCreator(
+    unique_id_column_name="rec_id",
+    link_type="dedupe_only",
+    blocking_rules_to_generate_predictions=blocking_rules,
+    comparisons=[
+        cl.NameComparison("given_name"),
+        cl.NameComparison("surname"),
+        cl.DateOfBirthComparison(
+            "date_of_birth",
+            input_is_string=True,
+            datetime_format="%Y%m%d",
+        ),
+        cl.DamerauLevenshteinAtThresholds("soc_sec_id", [2]),
+        cl.ExactMatch("street_number").configure(term_frequency_adjustments=True),
+        cl.ExactMatch("postcode").configure(term_frequency_adjustments=True),
     ],
-    "retain_intermediate_calculation_columns": True,
-}
+    retain_intermediate_calculation_columns=True,
+)
 
-linker = DuckDBLinker(df, settings)
+linker = Linker(df, settings, db_api=DuckDBAPI())
+
+from splink import block_on
 
 deterministic_rules = [
-    "l.soc_sec_id = r.soc_sec_id",
-    "l.given_name = r.given_name and l.surname = r.surname and l.date_of_birth = r.date_of_birth",
-    "l.given_name = r.surname and l.surname = r.given_name and l.date_of_birth = r.date_of_birth"
+    block_on("soc_sec_id"),
+    block_on("given_name", "surname", "date_of_birth"),
+    "l.given_name = r.surname and l.surname = r.given_name and l.date_of_birth = r.date_of_birth",
 ]
 
-linker.estimate_probability_two_random_records_match(deterministic_rules, recall=0.9)
+linker.training.estimate_probability_two_random_records_match(
+    deterministic_rules, recall=0.9
+)
 
-linker.estimate_u_using_random_sampling(max_pairs=1e6)
+linker.training.estimate_u_using_random_sampling(max_pairs=1e6)
 
-em_blocking_rule_1 = block_on("substr(date_of_birth,1,3)")
-em_blocking_rule_2 = block_on("substr(postcode,1,2)")
-session_dob = linker.estimate_parameters_using_expectation_maximisation(em_blocking_rule_1)
-session_postcode = linker.estimate_parameters_using_expectation_maximisation(em_blocking_rule_2)
+em_blocking_rule_1 = block_on("date_of_birth")
+session_dob = linker.training.estimate_parameters_using_expectation_maximisation(
+    em_blocking_rule_1
+)
 
-linker.match_weights_chart()
+em_blocking_rule_2 = block_on("postcode")
+session_postcode = linker.training.estimate_parameters_using_expectation_maximisation(
+    em_blocking_rule_2
+)
 
-results = linker.predict(threshold_match_probability=0.2)
+linker.visualisations.match_weights_chart()
 
-linker.roc_chart_from_labels_column("cluster")
+results = linker.inference.predict(threshold_match_probability=0.2)
 
-pred_errors_df = linker.prediction_errors_from_labels_column("cluster").as_pandas_dataframe()
+linker.evaluation.accuracy_analysis_from_labels_column(
+    "cluster", match_weight_round_to_nearest=0.1, output_type="accuracy"
+)
+
+pred_errors_df = linker.evaluation.prediction_errors_from_labels_column(
+    "cluster"
+).as_pandas_dataframe()
 len(pred_errors_df)
 pred_errors_df.head()
 
-records = linker.prediction_errors_from_labels_column("cluster").as_record_dict(limit=10)
-linker.waterfall_chart(records)
+records = linker.evaluation.prediction_errors_from_labels_column(
+    "cluster"
+).as_record_dict(limit=10)
+linker.visualisations.waterfall_chart(records)
