@@ -19,7 +19,7 @@ settings = SettingsCreator(
     ],
 )
 
-linker = Linker(df, settings, database_api=DuckDBAPI())
+linker = Linker(df, settings, db_api=DuckDBAPI())
 
 linker.training.estimate_probability_two_random_records_match(
     deterministic_matching_rules=[
