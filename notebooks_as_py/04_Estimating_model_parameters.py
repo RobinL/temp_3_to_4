@@ -1,65 +1,68 @@
+# Uncomment and run this cell if you're running in Google Colab.
+# !pip install splink
+
 # Begin by reading in the tutorial data again
-from splink.duckdb.linker import DuckDBLinker
-from splink.datasets import splink_datasets
-import altair as alt
+from splink import splink_datasets
+
 df = splink_datasets.fake_1000
 
-import splink.duckdb.comparison_library as cl
+import splink.comparison_library as cl
 
-email_comparison =  cl.levenshtein_at_thresholds("email", 2)
-print(email_comparison.human_readable_description)
+city_comparison = cl.LevenshteinAtThresholds("city", 2)
+print(city_comparison.get_comparison("duckdb").human_readable_description)
 
-import splink.duckdb.comparison_template_library as ctl
+email_comparison = cl.EmailComparison("email")
+print(email_comparison.get_comparison("duckdb").human_readable_description)
 
-first_name_comparison = ctl.name_comparison("first_name")
-print(first_name_comparison.human_readable_description)
+from splink import Linker, SettingsCreator, block_on, DuckDBAPI
 
-
-from splink.duckdb.blocking_rule_library import block_on
-
-settings = {
-    "link_type": "dedupe_only",
-    "comparisons": [
-        ctl.name_comparison("first_name"),
-        ctl.name_comparison("surname"),
-        ctl.date_comparison("dob", cast_strings_to_date=True),
-        cl.exact_match("city", term_frequency_adjustments=True),
-        ctl.email_comparison("email", include_username_fuzzy_level=False),
+settings = SettingsCreator(
+    link_type="dedupe_only",
+    comparisons=[
+        cl.NameComparison("first_name"),
+        cl.NameComparison("surname"),
+        cl.LevenshteinAtThresholds("dob", 1),
+        cl.ExactMatch("city").configure(term_frequency_adjustments=True),
+        cl.EmailComparison("email"),
     ],
-    "blocking_rules_to_generate_predictions": [
-        block_on("first_name"),
+    blocking_rules_to_generate_predictions=[
+        block_on("first_name", "city"),
         block_on("surname"),
-    ],
-    "retain_matching_columns": True,
-    "retain_intermediate_calculation_columns": True,
-}
 
-linker = DuckDBLinker(df, settings)
+    ],
+    retain_intermediate_calculation_columns=True,
+)
+
+linker = Linker(df, settings, db_api=DuckDBAPI())
 
 deterministic_rules = [
-    "l.first_name = r.first_name and levenshtein(r.dob, l.dob) <= 1",
-    "l.surname = r.surname and levenshtein(r.dob, l.dob) <= 1",
+    block_on("first_name", "dob"),
     "l.first_name = r.first_name and levenshtein(r.surname, l.surname) <= 2",
-    "l.email = r.email"
+    block_on("email")
 ]
 
-linker.estimate_probability_two_random_records_match(deterministic_rules, recall=0.7)
+linker.training.estimate_probability_two_random_records_match(deterministic_rules, recall=0.7)
 
-linker.estimate_u_using_random_sampling(max_pairs=1e6)
+linker.training.estimate_u_using_random_sampling(max_pairs=1e6)
 
-training_blocking_rule = block_on(["first_name", "surname"])
-training_session_fname_sname = linker.estimate_parameters_using_expectation_maximisation(training_blocking_rule)
-
-from numpy import fix
-
+training_blocking_rule = block_on("first_name", "surname")
+training_session_fname_sname = (
+    linker.training.estimate_parameters_using_expectation_maximisation(training_blocking_rule)
+)
 
 training_blocking_rule = block_on("dob")
-training_session_dob = linker.estimate_parameters_using_expectation_maximisation(training_blocking_rule)
+training_session_dob = linker.training.estimate_parameters_using_expectation_maximisation(
+    training_blocking_rule
+)
 
-linker.match_weights_chart()
+linker.visualisations.match_weights_chart()
 
-linker.m_u_parameters_chart()
+linker.visualisations.m_u_parameters_chart()
 
-settings = linker.save_model_to_json("../demo_settings/saved_model_from_demo.json", overwrite=True)
+linker.visualisations.parameter_estimate_comparisons_chart()
 
-linker.unlinkables_chart()
+settings = linker.misc.save_model_to_json(
+    "../demo_settings/saved_model_from_demo.json", overwrite=True
+)
+
+linker.evaluation.unlinkables_chart()

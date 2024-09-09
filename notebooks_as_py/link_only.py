@@ -1,4 +1,8 @@
-from splink.datasets import splink_datasets
+# Uncomment and run this cell if you're running in Google Colab.
+# !pip install splink
+
+from splink import splink_datasets
+
 df = splink_datasets.fake_1000
 
 # Split a simple dataset into two, separate datasets which can be linked together.
@@ -7,47 +11,68 @@ df_r = df.drop(df_l.index)
 
 df_l.head(2)
 
-from splink.duckdb.linker import DuckDBLinker
-from splink.duckdb.blocking_rule_library import block_on
-import splink.duckdb.comparison_library as cl
-import splink.duckdb.comparison_template_library as ctl
+import splink.comparison_library as cl
 
+from splink import DuckDBAPI, Linker, SettingsCreator, block_on
 
-settings = {
-    "link_type": "link_only",
-    "blocking_rules_to_generate_predictions": [
+settings = SettingsCreator(
+    link_type="link_only",
+    blocking_rules_to_generate_predictions=[
         block_on("first_name"),
         block_on("surname"),
     ],
-    "comparisons": [
-        ctl.name_comparison("first_name",),
-        ctl.name_comparison("surname"),
-        ctl.date_comparison("dob", cast_strings_to_date=True),
-        cl.exact_match("city", term_frequency_adjustments=True),
-        ctl.email_comparison("email", include_username_fuzzy_level=False),
-    ],       
-}
+    comparisons=[
+        cl.NameComparison(
+            "first_name",
+        ),
+        cl.NameComparison("surname"),
+        cl.DateOfBirthComparison(
+            "dob",
+            input_is_string=True,
+            invalid_dates_as_null=True,
+        ),
+        cl.ExactMatch("city").configure(term_frequency_adjustments=True),
+        cl.EmailComparison("email"),
+    ],
+)
 
-linker = DuckDBLinker([df_l, df_r], settings, input_table_aliases=["df_left", "df_right"])
+linker = Linker(
+    [df_l, df_r],
+    settings,
+    db_api=DuckDBAPI(),
+    input_table_aliases=["df_left", "df_right"],
+)
 
-linker.completeness_chart(cols=["first_name", "surname", "dob", "city", "email"])
+from splink.exploratory import completeness_chart
+
+completeness_chart(
+    [df_l, df_r],
+    cols=["first_name", "surname", "dob", "city", "email"],
+    db_api=DuckDBAPI(),
+    table_names_for_chart=["df_left", "df_right"],
+)
+
 
 deterministic_rules = [
     "l.first_name = r.first_name and levenshtein(r.dob, l.dob) <= 1",
     "l.surname = r.surname and levenshtein(r.dob, l.dob) <= 1",
     "l.first_name = r.first_name and levenshtein(r.surname, l.surname) <= 2",
-    "l.email = r.email"
+    block_on("email"),
 ]
 
-linker.estimate_probability_two_random_records_match(deterministic_rules, recall=0.7)
 
+linker.training.estimate_probability_two_random_records_match(deterministic_rules, recall=0.7)
 
-linker.estimate_u_using_random_sampling(max_pairs=1e6, seed=1)
+linker.training.estimate_u_using_random_sampling(max_pairs=1e6, seed=1)
 
-session_dob = linker.estimate_parameters_using_expectation_maximisation(block_on("dob"))
-session_email = linker.estimate_parameters_using_expectation_maximisation(block_on("email"))
-session_first_name = linker.estimate_parameters_using_expectation_maximisation(block_on("first_name"))
+session_dob = linker.training.estimate_parameters_using_expectation_maximisation(block_on("dob"))
+session_email = linker.training.estimate_parameters_using_expectation_maximisation(
+    block_on("email")
+)
+session_first_name = linker.training.estimate_parameters_using_expectation_maximisation(
+    block_on("first_name")
+)
 
-results = linker.predict(threshold_match_probability=0.9)
+results = linker.inference.predict(threshold_match_probability=0.9)
 
 results.as_pandas_dataframe(limit=5)

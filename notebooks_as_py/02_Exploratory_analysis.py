@@ -1,13 +1,17 @@
-from splink.datasets import splink_datasets
-import altair as alt
+# Uncomment and run this cell if you're running in Google Colab.
+# !pip install splink
+
+from splink import  splink_datasets
 
 df = splink_datasets.fake_1000
+df = df.drop(columns=["cluster"])
 df.head(5)
 
-# Initialise the linker, passing in the input dataset(s)
-from splink.duckdb.linker import DuckDBLinker
-linker = DuckDBLinker(df)
+from splink.exploratory import completeness_chart
+from splink import DuckDBAPI
+db_api = DuckDBAPI()
+completeness_chart(df, db_api=db_api)
 
-linker.missingness_chart()
+from splink.exploratory import profile_columns
 
-linker.profile_columns(top_n=10, bottom_n=5)
+profile_columns(df, db_api=DuckDBAPI(), top_n=10, bottom_n=5)
